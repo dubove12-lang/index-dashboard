@@ -4,12 +4,14 @@ import pandas as pd
 import plotly.graph_objects as go
 import json
 import os
+import time
+from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
 # === KONŠTANTY ===
 BASE_URL = "https://api.hyperliquid.xyz/info"
 HEADERS = {"content-type": "application/json"}
-REFRESH_INTERVAL = 300  # sekúnd = 5 minút
+REFRESH_INTERVAL = 30  # sekúnd = 5 minút
 DASHBOARD_FILE = "dashboards.json"
 DATA_DIR = "data"
 DELETE_PIN = "6000"  # 🔒 bezpečnostný PIN
@@ -74,9 +76,43 @@ def get_wallet_value(wallet):
     except Exception:
         return None
 
+
+# 🔹 === UPRAVENÁ FUNKCIA: trading volume od zvoleného času ===
+def get_wallet_volume(wallet, start_timestamp):
+    """Zistí trading volume od zadaného timestampu (ms)."""
+    try:
+        payload = {"type": "userFills", "user": wallet}
+        r = requests.post(BASE_URL, json=payload, headers=HEADERS, timeout=10)
+        if r.status_code != 200:
+            return 0.0
+
+        trades = r.json()
+        if not isinstance(trades, list) or len(trades) == 0:
+            return 0.0
+
+        total_volume = 0.0
+        for trade in trades:
+            try:
+                trade_time = int(trade.get("time", 0))
+                if trade_time >= start_timestamp:
+                    price = float(trade.get("px", 0))
+                    size = float(trade.get("sz", 0))
+                    total_volume += price * size
+            except Exception:
+                continue
+
+        return round(total_volume, 2)
+    except Exception as e:
+        print(f"⚠️ Error getting volume for {wallet}: {e}")
+        return 0.0
+
+
 # === DASHBOARD CREATOR ===
-def create_dashboard(name, wallet1, wallet2):
-    st.session_state.dashboards[name] = {"wallets": [wallet1, wallet2]}
+def create_dashboard(name, wallet1, wallet2, volume_start_ts):
+    st.session_state.dashboards[name] = {
+        "wallets": [wallet1, wallet2],
+        "volume_start_ts": volume_start_ts
+    }
     st.session_state.dataframes[name] = pd.DataFrame(columns=["timestamp", "wallet", "value", "total"])
     save_dashboards(st.session_state.dashboards)
     save_dashboard_data(name, st.session_state.dataframes[name])
@@ -87,6 +123,11 @@ name = st.sidebar.text_input("Dashboard name")
 w1 = st.sidebar.text_input("Wallet 1 address")
 w2 = st.sidebar.text_input("Wallet 2 address")
 
+# 🔹 nový výber dátumu a času pre volume
+st.sidebar.markdown("#### 📆 Volume Tracking Start")
+start_date = st.sidebar.date_input("Start date", datetime.now())
+start_time = st.sidebar.time_input("Start time", datetime.now().time())
+
 if st.sidebar.button("Add Dashboard"):
     if not (name and w1 and w2):
         st.sidebar.error("Please fill in all fields!")
@@ -94,8 +135,10 @@ if st.sidebar.button("Add Dashboard"):
         st.sidebar.warning(f"Dashboard '{name}' already exists — not added again.")
         st.stop()
     else:
-        create_dashboard(name, w1, w2)
-        st.sidebar.success(f"✅ Dashboard '{name}' created!")
+        dt = datetime.combine(start_date, start_time)
+        volume_start_ts = int(dt.timestamp() * 1000)
+        create_dashboard(name, w1, w2, volume_start_ts)
+        st.sidebar.success(f"✅ Dashboard '{name}' created! Tracking volume since {dt.strftime('%Y-%m-%d %H:%M:%S')}")
 
 # === HLAVNÝ NADPIS ===
 st.title("📊 Hyperliquid Live Wallet Dashboards")
@@ -109,6 +152,7 @@ if not st.session_state.dashboards:
 else:
     for name, info in list(st.session_state.dashboards.items()):
         wallets = info["wallets"]
+        start_ts = info.get("volume_start_ts", 0)
 
         # načítaj historické dáta
         df = st.session_state.dataframes.get(name)
@@ -124,6 +168,11 @@ else:
                 values.append(val)
 
         total = sum(values) if len(values) == 2 else 0
+
+        # 🔹 Volume od vybraného času
+        vol1 = get_wallet_volume(wallets[0], start_ts)
+        vol2 = get_wallet_volume(wallets[1], start_ts)
+        total_volume = vol1 + vol2
 
         # Uloženie nového bodu
         if len(values) == 2:
@@ -155,19 +204,21 @@ else:
                     else:
                         st.error("❌ Incorrect PIN. Dashboard not deleted.")
 
-        # === TRI METRIKY NAD GRAFOM ===
+        # === METRIKY NAD GRAFOM ===
         if info.get("start_total", 0) > 0:
             start_val = info["start_total"]
             curr_val = total
             pct_change = ((curr_val - start_val) / start_val) * 100
 
-            m1, m2, m3 = st.columns(3)
+            m1, m2, m3, m4 = st.columns(4)
             with m1:
                 st.metric("💰 Start Value (USD)", f"${start_val:,.2f}")
             with m2:
                 st.metric("📈 Current Value (USD)", f"${curr_val:,.2f}")
             with m3:
                 st.metric("📊 Change (%)", f"{pct_change:+.2f}%")
+            with m4:
+                st.metric("🔄 Volume Since Start (USD)", f"${total_volume:,.2f}")
         else:
             st.warning("No valid data yet to compute metrics.")
 
@@ -212,5 +263,3 @@ else:
             st.markdown(f"**🪙 Wallet 2:** `{wallets[1]}`")
 
         st.markdown("---")
-
-
