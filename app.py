@@ -97,7 +97,7 @@ if st.sidebar.button("Add Dashboard"):
         st.sidebar.success(f"✅ Dashboard '{name}' created!")
 
 # === HLAVNÝ NADPIS ===
-st.title("📊 Hyperliquid Live Wallet Dashboards")
+st.title("📊 Hyperliquid Index Dashboards")
 
 # === PERIODICKÝ REFRESH ===
 st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="data_refresh")
