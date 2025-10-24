@@ -1,3 +1,4 @@
+
 import streamlit as st
 import requests
 import pandas as pd
@@ -74,7 +75,7 @@ def get_wallet_value(wallet):
         data = r.json()
         return float(data["marginSummary"]["accountValue"])
     except Exception:
-        return None
+        return 0.0  # 👈 tu opravene — vratí 0 namiesto None
 
 
 # === TRADING VOLUME FUNKCIA ===
@@ -111,7 +112,8 @@ def get_wallet_volume(wallet, start_timestamp):
 def create_dashboard(name, wallet1, wallet2, volume_start_ts):
     st.session_state.dashboards[name] = {
         "wallets": [wallet1, wallet2],
-        "volume_start_ts": volume_start_ts
+        "volume_start_ts": volume_start_ts,
+        "start_total": 0
     }
     st.session_state.dataframes[name] = pd.DataFrame(columns=["timestamp", "wallet", "value", "total"])
     save_dashboards(st.session_state.dashboards)
@@ -163,13 +165,8 @@ else:
             st.session_state.dataframes[name] = df
 
         # Získanie hodnôt walletiek
-        values = []
-        for w in wallets:
-            val = get_wallet_value(w)
-            if val:
-                values.append(val)
-
-        total = sum(values) if len(values) == 2 else 0
+        values = [get_wallet_value(w) for w in wallets]
+        total = sum(values)
 
         # 🔹 Volume od vybraného času
         vol1 = get_wallet_volume(wallets[0], start_ts)
@@ -177,9 +174,8 @@ else:
         total_volume = vol1 + vol2
 
         # Uloženie nového bodu
-        if len(values) == 2:
-            new_rows = []
-            new_rows.append({"timestamp": pd.Timestamp.now(), "wallet": "total", "value": total, "total": total})
+        if any(values):
+            new_rows = [{"timestamp": pd.Timestamp.now(), "wallet": "total", "value": total, "total": total}]
             for i, w in enumerate(wallets):
                 new_rows.append({"timestamp": pd.Timestamp.now(), "wallet": w, "value": values[i], "total": total})
             df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
@@ -187,11 +183,9 @@ else:
             save_dashboard_data(name, df)
 
         # Inicializácia štartovej hodnoty
-        if "start_total" not in info or info["start_total"] == 0:
+        if info.get("start_total", 0) == 0 and total > 0:
             info["start_total"] = total
             save_dashboards(st.session_state.dashboards)
-
-        pct_change = ((total - info["start_total"]) / info["start_total"]) * 100 if info["start_total"] else 0
 
         # === HORNÝ RIADOK ===
         top_col1, top_col2 = st.columns([6, 1])
@@ -207,42 +201,34 @@ else:
                         st.error("❌ Incorrect PIN. Dashboard not deleted.")
 
         # === METRIKY NAD GRAFOM ===
-        if info.get("start_total", 0) > 0:
-            start_val = info["start_total"]
-            curr_val = total
-            pct_change = ((curr_val - start_val) / start_val) * 100
+        m1, m2, m3, m4 = st.columns(4)
 
-            m1, m2, m3, m4 = st.columns(4)
-            with m1:
-                st.metric("💰 Start Value (USD)", f"${start_val:,.2f}")
-            with m2:
-                st.metric("📈 Current Value (USD)", f"${curr_val:,.2f}")
-            with m3:
-                st.metric("📊 Change (%)", f"{pct_change:+.2f}%")
-            with m4:
-                st.metric("🔄 Volume Since Start (USD)", f"${total_volume:,.2f}")
-                if start_ts:
-                    st.caption(f"Since: {datetime.fromtimestamp(start_ts / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
-        else:
-            st.warning("No valid data yet to compute metrics.")
+        start_val = info.get("start_total", 0)
+        curr_val = total
+        pct_change = ((curr_val - start_val) / start_val) * 100 if start_val > 0 else 0
+
+        with m1:
+            st.metric("💰 Start Value (USD)", f"${start_val:,.2f}")
+        with m2:
+            st.metric("📈 Current Value (USD)", f"${curr_val:,.2f}")
+        with m3:
+            st.metric("📊 Change (%)", f"{pct_change:+.2f}%")
+        with m4:
+            st.metric("🔄 Volume Since Start (USD)", f"${total_volume:,.2f}")
+            if start_ts:
+                st.caption(f"Since: {datetime.fromtimestamp(start_ts / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
 
         # === GRAF ===
         if not df.empty:
             fig = go.Figure()
 
-            df1 = df[df["wallet"] == wallets[0]]
-            if not df1.empty:
-                fig.add_trace(go.Scatter(
-                    x=df1["timestamp"], y=df1["value"],
-                    mode="lines+markers", name="Wallet 1", line=dict(width=3)
-                ))
-
-            df2 = df[df["wallet"] == wallets[1]]
-            if not df2.empty:
-                fig.add_trace(go.Scatter(
-                    x=df2["timestamp"], y=df2["value"],
-                    mode="lines+markers", name="Wallet 2", line=dict(width=3)
-                ))
+            for i, w in enumerate(wallets):
+                dfi = df[df["wallet"] == w]
+                if not dfi.empty:
+                    fig.add_trace(go.Scatter(
+                        x=dfi["timestamp"], y=dfi["value"],
+                        mode="lines+markers", name=f"Wallet {i+1}", line=dict(width=3)
+                    ))
 
             df_total = df[df["wallet"] == "total"]
             if not df_total.empty:
@@ -262,9 +248,8 @@ else:
 
             st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown("### 💼 Wallets")
-            st.markdown(f"**🪙 Wallet 1:** `{wallets[0]}`")
-            st.markdown(f"**🪙 Wallet 2:** `{wallets[1]}`")
+        st.markdown("### 💼 Wallets")
+        st.markdown(f"**🪙 Wallet 1:** `{wallets[0]}`")
+        st.markdown(f"**🪙 Wallet 2:** `{wallets[1]}`")
 
         st.markdown("---")
-
