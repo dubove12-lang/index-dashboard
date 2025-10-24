@@ -11,7 +11,7 @@ from streamlit_autorefresh import st_autorefresh
 # === KONŠTANTY ===
 BASE_URL = "https://api.hyperliquid.xyz/info"
 HEADERS = {"content-type": "application/json"}
-REFRESH_INTERVAL = 30  # sekúnd = 5 minút
+REFRESH_INTERVAL = 300  # sekúnd = 5 minút
 DASHBOARD_FILE = "dashboards.json"
 DATA_DIR = "data"
 DELETE_PIN = "6000"  # 🔒 bezpečnostný PIN
