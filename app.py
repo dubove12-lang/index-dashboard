@@ -77,7 +77,7 @@ def get_wallet_value(wallet):
         return None
 
 
-# 🔹 === UPRAVENÁ FUNKCIA: trading volume od zvoleného času ===
+# === TRADING VOLUME FUNKCIA ===
 def get_wallet_volume(wallet, start_timestamp):
     """Zistí trading volume od zadaného timestampu (ms)."""
     try:
@@ -123,7 +123,7 @@ name = st.sidebar.text_input("Dashboard name")
 w1 = st.sidebar.text_input("Wallet 1 address")
 w2 = st.sidebar.text_input("Wallet 2 address")
 
-# 🔹 nový výber dátumu a času pre volume
+# výber dátumu a času pre volume
 st.sidebar.markdown("#### 📆 Volume Tracking Start")
 start_date = st.sidebar.date_input("Start date", datetime.now())
 start_time = st.sidebar.time_input("Start time", datetime.now().time())
@@ -152,7 +152,9 @@ if not st.session_state.dashboards:
 else:
     for name, info in list(st.session_state.dashboards.items()):
         wallets = info["wallets"]
-        start_ts = info.get("volume_start_ts", 0)
+
+        # 🔧 fix – konverzia timestampu na int (aby fungoval po refreši)
+        start_ts = int(info.get("volume_start_ts", 0)) if info.get("volume_start_ts") else 0
 
         # načítaj historické dáta
         df = st.session_state.dataframes.get(name)
@@ -219,6 +221,8 @@ else:
                 st.metric("📊 Change (%)", f"{pct_change:+.2f}%")
             with m4:
                 st.metric("🔄 Volume Since Start (USD)", f"${total_volume:,.2f}")
+                if start_ts:
+                    st.caption(f"Since: {datetime.fromtimestamp(start_ts / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
         else:
             st.warning("No valid data yet to compute metrics.")
 
@@ -263,3 +267,4 @@ else:
             st.markdown(f"**🪙 Wallet 2:** `{wallets[1]}`")
 
         st.markdown("---")
+
