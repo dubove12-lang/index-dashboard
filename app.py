@@ -112,8 +112,7 @@ def get_open_positions(wallet):
         positions = []
         asset_positions = data.get("assetPositions", [])
 
-        # Nový formát - assetPositions ako list
-        if isinstance(asset_positions, list):
+        if isinstance(asset_positions, list):  # nový formát
             for pos in asset_positions:
                 position = pos.get("position")
                 if position and float(position.get("positionValue", 0)) > 0:
@@ -122,9 +121,7 @@ def get_open_positions(wallet):
                         "Position Value (USD)": round(float(position.get("positionValue", 0)), 2),
                         "Unrealized PnL (USD)": round(float(position.get("unrealizedPnl", 0)), 2)
                     })
-
-        # Starý formát - assetPositions ako dict
-        elif isinstance(asset_positions, dict):
+        elif isinstance(asset_positions, dict):  # starý formát
             for _, pos in asset_positions.items():
                 position = pos.get("position")
                 if position and float(position.get("positionValue", 0)) > 0:
@@ -133,9 +130,7 @@ def get_open_positions(wallet):
                         "Position Value (USD)": round(float(position.get("positionValue", 0)), 2),
                         "Unrealized PnL (USD)": round(float(position.get("unrealizedPnl", 0)), 2)
                     })
-
         return positions
-
     except Exception as e:
         print(f"⚠️ Error fetching positions for {wallet}: {e}")
         return []
@@ -273,11 +268,14 @@ else:
 
         # === NOVÁ SEKCIA: OTVORENÉ POZÍCIE ===
         st.markdown("### 📈 Open Positions")
-        for i, w in enumerate(wallets, start=1):
-            st.markdown(f"**Wallet {i+1}:** `{w}`")
-            positions = get_open_positions(w)
+
+        for idx, wallet_addr in enumerate(wallets, start=1):
+            st.markdown(f"**Wallet {idx}:** `{wallet_addr}`")
+            positions = get_open_positions(wallet_addr)
+
             if positions:
                 pos_df = pd.DataFrame(positions)
+                pos_df.index = range(1, len(pos_df) + 1)  # ✅ číslovanie od 1
 
                 # 💄 ŠTÝLOVANIE TABUĽKY
                 def style_pnl(val):
@@ -285,15 +283,15 @@ else:
                         val = float(val)
                         color = "green" if val > 0 else "red" if val < 0 else "white"
                         return f"color: {color}; font-weight: bold;"
-                    except:
+                    except Exception:
                         return ""
 
                 def style_bold(_):
                     return "font-weight: bold;"
 
                 # Formátovanie na 2 desatinné miesta
-                pos_df["Position Value (USD)"] = pos_df["Position Value (USD)"].map(lambda x: f"{x:,.2f}")
-                pos_df["Unrealized PnL (USD)"] = pos_df["Unrealized PnL (USD)"].map(lambda x: f"{x:,.2f}")
+                pos_df["Position Value (USD)"] = pos_df["Position Value (USD)"].apply(lambda x: f"{float(x):,.2f}")
+                pos_df["Unrealized PnL (USD)"] = pos_df["Unrealized PnL (USD)"].apply(lambda x: f"{float(x):,.2f}")
 
                 styled_df = (
                     pos_df.style
@@ -308,8 +306,16 @@ else:
                 )
 
                 st.dataframe(styled_df, use_container_width=True)
+                total_pnl = pos_df["Unrealized PnL (USD)"].apply(lambda x: float(x.replace(',', ''))).sum()
+                color = "green" if total_pnl > 0 else "red" if total_pnl < 0 else "white"
+                st.markdown(
+                    f"<p style='font-weight:bold;font-size:16px;color:{color};'>"
+                    f"Total Unrealized PnL: {total_pnl:+,.2f} USD</p>",
+                    unsafe_allow_html=True
+                )
             else:
                 st.info("No open positions.")
 
         st.markdown("---")
+
 
