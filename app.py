@@ -263,8 +263,8 @@ else:
             st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("### 💼 Wallets")
-        st.markdown(f"**🪙 Wallet 1:** `{wallets[0]}`")
-        st.markdown(f"**🪙 Wallet 2:** `{wallets[1]}`")
+        st.markdown(f"**🪙 (LONGS) Wallet 1:** `{wallets[0]}`")
+        st.markdown(f"**🪙 (SHORTS) Wallet 2:** `{wallets[1]}`")
 
         # === NOVÁ SEKCIA: OTVORENÉ POZÍCIE ===
         st.markdown("### 📈 Open Positions")
