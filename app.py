@@ -1,11 +1,9 @@
-
 import streamlit as st
 import requests
 import pandas as pd
 import plotly.graph_objects as go
 import json
 import os
-import time
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
@@ -75,10 +73,8 @@ def get_wallet_value(wallet):
         data = r.json()
         return float(data["marginSummary"]["accountValue"])
     except Exception:
-        return 0.0  # 👈 tu opravene — vratí 0 namiesto None
+        return 0.0
 
-
-# === TRADING VOLUME FUNKCIA ===
 def get_wallet_volume(wallet, start_timestamp):
     """Zistí trading volume od zadaného timestampu (ms)."""
     try:
@@ -101,12 +97,48 @@ def get_wallet_volume(wallet, start_timestamp):
                     total_volume += price * size
             except Exception:
                 continue
-
         return round(total_volume, 2)
     except Exception as e:
         print(f"⚠️ Error getting volume for {wallet}: {e}")
         return 0.0
 
+def get_open_positions(wallet):
+    """Načíta otvorené pozície a PnL pre walletku."""
+    payload = {"type": "clearinghouseState", "user": wallet}
+    try:
+        r = requests.post(BASE_URL, json=payload, headers=HEADERS, timeout=10)
+        data = r.json()
+
+        positions = []
+        asset_positions = data.get("assetPositions", [])
+
+        # Nový formát - assetPositions ako list
+        if isinstance(asset_positions, list):
+            for pos in asset_positions:
+                position = pos.get("position")
+                if position and float(position.get("positionValue", 0)) > 0:
+                    positions.append({
+                        "Token": position.get("coin"),
+                        "Position Value (USD)": round(float(position.get("positionValue", 0)), 2),
+                        "Unrealized PnL (USD)": round(float(position.get("unrealizedPnl", 0)), 2)
+                    })
+
+        # Starý formát - assetPositions ako dict
+        elif isinstance(asset_positions, dict):
+            for _, pos in asset_positions.items():
+                position = pos.get("position")
+                if position and float(position.get("positionValue", 0)) > 0:
+                    positions.append({
+                        "Token": position.get("coin"),
+                        "Position Value (USD)": round(float(position.get("positionValue", 0)), 2),
+                        "Unrealized PnL (USD)": round(float(position.get("unrealizedPnl", 0)), 2)
+                    })
+
+        return positions
+
+    except Exception as e:
+        print(f"⚠️ Error fetching positions for {wallet}: {e}")
+        return []
 
 # === DASHBOARD CREATOR ===
 def create_dashboard(name, wallet1, wallet2, volume_start_ts):
@@ -125,7 +157,6 @@ name = st.sidebar.text_input("Dashboard name")
 w1 = st.sidebar.text_input("Wallet 1 address")
 w2 = st.sidebar.text_input("Wallet 2 address")
 
-# výber dátumu a času pre volume
 st.sidebar.markdown("#### 📆 Volume Tracking Start")
 start_date = st.sidebar.date_input("Start date", datetime.now())
 start_time = st.sidebar.time_input("Start time", datetime.now().time())
@@ -154,26 +185,20 @@ if not st.session_state.dashboards:
 else:
     for name, info in list(st.session_state.dashboards.items()):
         wallets = info["wallets"]
-
-        # 🔧 fix – konverzia timestampu na int (aby fungoval po refreši)
         start_ts = int(info.get("volume_start_ts", 0)) if info.get("volume_start_ts") else 0
 
-        # načítaj historické dáta
         df = st.session_state.dataframes.get(name)
         if df is None or df.empty:
             df = load_dashboard_data(name)
             st.session_state.dataframes[name] = df
 
-        # Získanie hodnôt walletiek
         values = [get_wallet_value(w) for w in wallets]
         total = sum(values)
 
-        # 🔹 Volume od vybraného času
         vol1 = get_wallet_volume(wallets[0], start_ts)
         vol2 = get_wallet_volume(wallets[1], start_ts)
         total_volume = vol1 + vol2
 
-        # Uloženie nového bodu
         if any(values):
             new_rows = [{"timestamp": pd.Timestamp.now(), "wallet": "total", "value": total, "total": total}]
             for i, w in enumerate(wallets):
@@ -182,12 +207,10 @@ else:
             st.session_state.dataframes[name] = df
             save_dashboard_data(name, df)
 
-        # Inicializácia štartovej hodnoty
         if info.get("start_total", 0) == 0 and total > 0:
             info["start_total"] = total
             save_dashboards(st.session_state.dashboards)
 
-        # === HORNÝ RIADOK ===
         top_col1, top_col2 = st.columns([6, 1])
         with top_col1:
             st.subheader(f"🧭 {name}")
@@ -200,9 +223,7 @@ else:
                     else:
                         st.error("❌ Incorrect PIN. Dashboard not deleted.")
 
-        # === METRIKY NAD GRAFOM ===
         m1, m2, m3, m4 = st.columns(4)
-
         start_val = info.get("start_total", 0)
         curr_val = total
         pct_change = ((curr_val - start_val) / start_val) * 100 if start_val > 0 else 0
@@ -218,10 +239,8 @@ else:
             if start_ts:
                 st.caption(f"Since: {datetime.fromtimestamp(start_ts / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
 
-        # === GRAF ===
         if not df.empty:
             fig = go.Figure()
-
             for i, w in enumerate(wallets):
                 dfi = df[df["wallet"] == w]
                 if not dfi.empty:
@@ -252,4 +271,45 @@ else:
         st.markdown(f"**🪙 Wallet 1:** `{wallets[0]}`")
         st.markdown(f"**🪙 Wallet 2:** `{wallets[1]}`")
 
+        # === NOVÁ SEKCIA: OTVORENÉ POZÍCIE ===
+        st.markdown("### 📈 Open Positions")
+        for i, w in enumerate(wallets, start=1):
+            st.markdown(f"**Wallet {i+1}:** `{w}`")
+            positions = get_open_positions(w)
+            if positions:
+                pos_df = pd.DataFrame(positions)
+
+                # 💄 ŠTÝLOVANIE TABUĽKY
+                def style_pnl(val):
+                    try:
+                        val = float(val)
+                        color = "green" if val > 0 else "red" if val < 0 else "white"
+                        return f"color: {color}; font-weight: bold;"
+                    except:
+                        return ""
+
+                def style_bold(_):
+                    return "font-weight: bold;"
+
+                # Formátovanie na 2 desatinné miesta
+                pos_df["Position Value (USD)"] = pos_df["Position Value (USD)"].map(lambda x: f"{x:,.2f}")
+                pos_df["Unrealized PnL (USD)"] = pos_df["Unrealized PnL (USD)"].map(lambda x: f"{x:,.2f}")
+
+                styled_df = (
+                    pos_df.style
+                    .applymap(style_bold)
+                    .applymap(style_pnl, subset=["Unrealized PnL (USD)"])
+                    .set_table_styles(
+                        [
+                            {"selector": "th", "props": [("font-weight", "bold"), ("font-size", "16px")]},
+                            {"selector": "td", "props": [("font-size", "15px")]}
+                        ]
+                    )
+                )
+
+                st.dataframe(styled_df, use_container_width=True)
+            else:
+                st.info("No open positions.")
+
         st.markdown("---")
+
