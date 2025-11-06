@@ -136,11 +136,11 @@ def get_open_positions(wallet):
         return []
 
 # === DASHBOARD CREATOR ===
-def create_dashboard(name, wallet1, wallet2, volume_start_ts):
+def create_dashboard(name, wallet1, wallet2, volume_start_ts, start_value):
     st.session_state.dashboards[name] = {
         "wallets": [wallet1, wallet2],
         "volume_start_ts": volume_start_ts,
-        "start_total": 0
+        "start_total": start_value
     }
     st.session_state.dataframes[name] = pd.DataFrame(columns=["timestamp", "wallet", "value", "total"])
     save_dashboards(st.session_state.dashboards)
@@ -151,6 +151,9 @@ st.sidebar.header("➕ Add New Dashboard")
 name = st.sidebar.text_input("Dashboard name")
 w1 = st.sidebar.text_input("Wallet 1 address")
 w2 = st.sidebar.text_input("Wallet 2 address")
+
+st.sidebar.markdown("#### 💰 Start Value")
+start_value = st.sidebar.number_input("Start value (USD)", min_value=0.0, step=100.0)
 
 st.sidebar.markdown("#### 📆 Volume Tracking Start")
 start_date = st.sidebar.date_input("Start date", datetime.now())
@@ -165,7 +168,7 @@ if st.sidebar.button("Add Dashboard"):
     else:
         dt = datetime.combine(start_date, start_time)
         volume_start_ts = int(dt.timestamp() * 1000)
-        create_dashboard(name, w1, w2, volume_start_ts)
+        create_dashboard(name, w1, w2, volume_start_ts, start_value)
         st.sidebar.success(f"✅ Dashboard '{name}' created! Tracking volume since {dt.strftime('%Y-%m-%d %H:%M:%S')}")
 
 # === HLAVNÝ NADPIS ===
@@ -201,10 +204,6 @@ else:
             df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
             st.session_state.dataframes[name] = df
             save_dashboard_data(name, df)
-
-        if info.get("start_total", 0) == 0 and total > 0:
-            info["start_total"] = total
-            save_dashboards(st.session_state.dashboards)
 
         top_col1, top_col2 = st.columns([6, 1])
         with top_col1:
@@ -317,5 +316,3 @@ else:
                 st.info("No open positions.")
 
         st.markdown("---")
-
-
