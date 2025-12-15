@@ -25,9 +25,22 @@ def load_dashboards():
     if os.path.exists(DASHBOARD_FILE):
         with open(DASHBOARD_FILE, "r") as f:
             try:
-                return json.load(f)
+                dashboards = json.load(f)
             except json.JSONDecodeError:
                 return {}
+
+        # ✅ MIGRÁCIA: starý formát wallets:[w1,w2] -> nový formát wallet:w1
+        changed = False
+        for name, info in dashboards.items():
+            if "wallet" not in info and "wallets" in info and isinstance(info["wallets"], list) and len(info["wallets"]) > 0:
+                info["wallet"] = info["wallets"][0]
+                # ak chceš, môžeš si ponechať info["wallets"] pre referenciu, ale netreba
+                changed = True
+
+        if changed:
+            save_dashboards(dashboards)
+
+        return dashboards
     return {}
 
 def save_dashboards(dashboards):
@@ -102,8 +115,21 @@ def get_wallet_volume(wallet, start_timestamp):
         print(f"⚠️ Error getting volume for {wallet}: {e}")
         return 0.0
 
+def _extract_position_size(position: dict) -> float:
+    """
+    Skúsi vyčítať size zo známych kľúčov.
+    Na Hyperliquid je často 'szi' (signed size). Ak to nebude, skúsi alternatívy.
+    """
+    for k in ["szi", "sz", "size", "positionSize"]:
+        if k in position:
+            try:
+                return float(position.get(k, 0))
+            except Exception:
+                pass
+    return 0.0
+
 def get_open_positions(wallet):
-    """Načíta otvorené pozície a PnL pre walletku."""
+    """Načíta otvorené pozície pre jednu walletku a rozlíši LONG/SHORT."""
     payload = {"type": "clearinghouseState", "user": wallet}
     try:
         r = requests.post(BASE_URL, json=payload, headers=HEADERS, timeout=10)
@@ -112,33 +138,56 @@ def get_open_positions(wallet):
         positions = []
         asset_positions = data.get("assetPositions", [])
 
+        def handle_position_obj(position: dict):
+            if not position:
+                return
+            try:
+                pv = float(position.get("positionValue", 0))
+            except Exception:
+                pv = 0.0
+
+            # berieme aj SHORT pozície => abs(pv) > 0
+            if abs(pv) <= 0:
+                return
+
+            size = _extract_position_size(position)
+            side = "LONG" if size > 0 else "SHORT" if size < 0 else "FLAT"
+
+            try:
+                upnl = float(position.get("unrealizedPnl", 0))
+            except Exception:
+                upnl = 0.0
+
+            positions.append({
+                "Token": position.get("coin"),
+                "Side": side,
+                "Position Value (USD)": round(abs(pv), 2),
+                "Size": round(size, 6),
+                "Unrealized PnL (USD)": round(upnl, 2)
+            })
+
         if isinstance(asset_positions, list):  # nový formát
             for pos in asset_positions:
                 position = pos.get("position")
-                if position and float(position.get("positionValue", 0)) > 0:
-                    positions.append({
-                        "Token": position.get("coin"),
-                        "Position Value (USD)": round(float(position.get("positionValue", 0)), 2),
-                        "Unrealized PnL (USD)": round(float(position.get("unrealizedPnl", 0)), 2)
-                    })
+                handle_position_obj(position)
         elif isinstance(asset_positions, dict):  # starý formát
             for _, pos in asset_positions.items():
                 position = pos.get("position")
-                if position and float(position.get("positionValue", 0)) > 0:
-                    positions.append({
-                        "Token": position.get("coin"),
-                        "Position Value (USD)": round(float(position.get("positionValue", 0)), 2),
-                        "Unrealized PnL (USD)": round(float(position.get("unrealizedPnl", 0)), 2)
-                    })
+                handle_position_obj(position)
+
+        # zoradenie: LONGs hore, potom SHORTs, a podľa Position Value
+        side_order = {"LONG": 0, "SHORT": 1, "FLAT": 2}
+        positions.sort(key=lambda x: (side_order.get(x["Side"], 99), -x["Position Value (USD)"]))
         return positions
+
     except Exception as e:
         print(f"⚠️ Error fetching positions for {wallet}: {e}")
         return []
 
 # === DASHBOARD CREATOR ===
-def create_dashboard(name, wallet1, wallet2, volume_start_ts, start_value):
+def create_dashboard(name, wallet, volume_start_ts, start_value):
     st.session_state.dashboards[name] = {
-        "wallets": [wallet1, wallet2],
+        "wallet": wallet,
         "volume_start_ts": volume_start_ts,
         "start_total": start_value
     }
@@ -149,8 +198,7 @@ def create_dashboard(name, wallet1, wallet2, volume_start_ts, start_value):
 # === SIDEBAR ===
 st.sidebar.header("➕ Add New Dashboard")
 name = st.sidebar.text_input("Dashboard name")
-w1 = st.sidebar.text_input("Wallet 1 address")
-w2 = st.sidebar.text_input("Wallet 2 address")
+wallet = st.sidebar.text_input("Wallet address")
 
 st.sidebar.markdown("#### 💰 Start Value")
 start_value = st.sidebar.number_input("Start value (USD)", min_value=0.0, step=100.0)
@@ -160,7 +208,7 @@ start_date = st.sidebar.date_input("Start date", datetime.now())
 start_time = st.sidebar.time_input("Start time", datetime.now().time())
 
 if st.sidebar.button("Add Dashboard"):
-    if not (name and w1 and w2):
+    if not (name and wallet):
         st.sidebar.error("Please fill in all fields!")
     elif name in st.session_state.dashboards:
         st.sidebar.warning(f"Dashboard '{name}' already exists — not added again.")
@@ -168,7 +216,7 @@ if st.sidebar.button("Add Dashboard"):
     else:
         dt = datetime.combine(start_date, start_time)
         volume_start_ts = int(dt.timestamp() * 1000)
-        create_dashboard(name, w1, w2, volume_start_ts, start_value)
+        create_dashboard(name, wallet, volume_start_ts, start_value)
         st.sidebar.success(f"✅ Dashboard '{name}' created! Tracking volume since {dt.strftime('%Y-%m-%d %H:%M:%S')}")
 
 # === HLAVNÝ NADPIS ===
@@ -182,7 +230,10 @@ if not st.session_state.dashboards:
     st.info("ℹ️ Add a dashboard from the sidebar to start tracking wallets.")
 else:
     for name, info in list(st.session_state.dashboards.items()):
-        wallets = info["wallets"]
+        wallet_addr = info.get("wallet") or (info.get("wallets", [None])[0])
+        if not wallet_addr:
+            continue
+
         start_ts = int(info.get("volume_start_ts", 0)) if info.get("volume_start_ts") else 0
 
         df = st.session_state.dataframes.get(name)
@@ -190,17 +241,17 @@ else:
             df = load_dashboard_data(name)
             st.session_state.dataframes[name] = df
 
-        values = [get_wallet_value(w) for w in wallets]
-        total = sum(values)
+        value = get_wallet_value(wallet_addr)
+        total = value  # ✅ pri 1 wallete je TOTAL = accountValue
 
-        vol1 = get_wallet_volume(wallets[0], start_ts)
-        vol2 = get_wallet_volume(wallets[1], start_ts)
-        total_volume = vol1 + vol2
+        total_volume = get_wallet_volume(wallet_addr, start_ts)
 
-        if any(values):
-            new_rows = [{"timestamp": pd.Timestamp.now(), "wallet": "total", "value": total, "total": total}]
-            for i, w in enumerate(wallets):
-                new_rows.append({"timestamp": pd.Timestamp.now(), "wallet": w, "value": values[i], "total": total})
+        if value != 0.0:
+            now = pd.Timestamp.now()
+            new_rows = [
+                {"timestamp": now, "wallet": "total", "value": total, "total": total},
+                {"timestamp": now, "wallet": wallet_addr, "value": value, "total": total},
+            ]
             df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
             st.session_state.dataframes[name] = df
             save_dashboard_data(name, df)
@@ -235,13 +286,13 @@ else:
 
         if not df.empty:
             fig = go.Figure()
-            for i, w in enumerate(wallets):
-                dfi = df[df["wallet"] == w]
-                if not dfi.empty:
-                    fig.add_trace(go.Scatter(
-                        x=dfi["timestamp"], y=dfi["value"],
-                        mode="lines+markers", name=f"Wallet {i+1}", line=dict(width=3)
-                    ))
+
+            dfi = df[df["wallet"] == wallet_addr]
+            if not dfi.empty:
+                fig.add_trace(go.Scatter(
+                    x=dfi["timestamp"], y=dfi["value"],
+                    mode="lines+markers", name="Wallet", line=dict(width=3)
+                ))
 
             df_total = df[df["wallet"] == "total"]
             if not df_total.empty:
@@ -258,61 +309,77 @@ else:
                 yaxis=dict(title=dict(text="USD Value", font=dict(size=18)), tickfont=dict(size=14)),
                 legend=dict(font=dict(size=14)),
             )
-
             st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("### 💼 Wallets")
-        st.markdown(f"**🪙 (LONGS) Wallet 1:** `{wallets[0]}`")
-        st.markdown(f"**🪙 (SHORTS) Wallet 2:** `{wallets[1]}`")
+        st.markdown("### 💼 Wallet")
+        st.markdown(f"**🪙 Wallet:** `{wallet_addr}`")
 
-        # === NOVÁ SEKCIA: OTVORENÉ POZÍCIE ===
-        st.markdown("### 📈 Open Positions")
+        # === OPEN POSITIONS (LONG+SHORT spolu) ===
+        st.markdown("### 📈 Open Positions (LONG zelená, SHORT červená)")
 
-        for idx, wallet_addr in enumerate(wallets, start=1):
-            st.markdown(f"**Wallet {idx}:** `{wallet_addr}`")
-            positions = get_open_positions(wallet_addr)
+        positions = get_open_positions(wallet_addr)
+        if positions:
+            pos_df = pd.DataFrame(positions)
+            pos_df.index = range(1, len(pos_df) + 1)
 
-            if positions:
-                pos_df = pd.DataFrame(positions)
-                pos_df.index = range(1, len(pos_df) + 1)  # ✅ číslovanie od 1
+            # ---- styling ----
+            def style_pnl(val):
+                try:
+                    v = float(val)
+                    color = "green" if v > 0 else "red" if v < 0 else "white"
+                    return f"color: {color}; font-weight: bold;"
+                except Exception:
+                    return ""
 
-                # 💄 ŠTÝLOVANIE TABUĽKY
-                def style_pnl(val):
-                    try:
-                        val = float(val)
-                        color = "green" if val > 0 else "red" if val < 0 else "white"
-                        return f"color: {color}; font-weight: bold;"
-                    except Exception:
-                        return ""
+            def style_side(val):
+                if str(val).upper() == "LONG":
+                    return "color: green; font-weight: bold;"
+                if str(val).upper() == "SHORT":
+                    return "color: red; font-weight: bold;"
+                return "font-weight: bold;"
 
-                def style_bold(_):
-                    return "font-weight: bold;"
+            def style_bold(_):
+                return "font-weight: bold;"
 
-                # Formátovanie na 2 desatinné miesta
-                pos_df["Position Value (USD)"] = pos_df["Position Value (USD)"].apply(lambda x: f"{float(x):,.2f}")
-                pos_df["Unrealized PnL (USD)"] = pos_df["Unrealized PnL (USD)"].apply(lambda x: f"{float(x):,.2f}")
+            # Formátovanie
+            pos_df["Position Value (USD)"] = pos_df["Position Value (USD)"].apply(lambda x: f"{float(x):,.2f}")
+            pos_df["Unrealized PnL (USD)"] = pos_df["Unrealized PnL (USD)"].apply(lambda x: f"{float(x):,.2f}")
+            pos_df["Size"] = pos_df["Size"].apply(lambda x: f"{float(x):,.6f}")
 
-                styled_df = (
-                    pos_df.style
-                    .applymap(style_bold)
-                    .applymap(style_pnl, subset=["Unrealized PnL (USD)"])
-                    .set_table_styles(
-                        [
-                            {"selector": "th", "props": [("font-weight", "bold"), ("font-size", "16px")]},
-                            {"selector": "td", "props": [("font-size", "15px")]}
-                        ]
-                    )
+            styled_df = (
+                pos_df.style
+                .applymap(style_bold)
+                .applymap(style_side, subset=["Side"])
+                .applymap(style_pnl, subset=["Unrealized PnL (USD)"])
+                .set_table_styles(
+                    [
+                        {"selector": "th", "props": [("font-weight", "bold"), ("font-size", "16px")]},
+                        {"selector": "td", "props": [("font-size", "15px")]}
+                    ]
                 )
+            )
 
-                st.dataframe(styled_df, use_container_width=True)
-                total_pnl = pos_df["Unrealized PnL (USD)"].apply(lambda x: float(x.replace(',', ''))).sum()
-                color = "green" if total_pnl > 0 else "red" if total_pnl < 0 else "white"
-                st.markdown(
-                    f"<p style='font-weight:bold;font-size:16px;color:{color};'>"
-                    f"Total Unrealized PnL: {total_pnl:+,.2f} USD</p>",
-                    unsafe_allow_html=True
-                )
-            else:
-                st.info("No open positions.")
+            st.dataframe(styled_df, use_container_width=True)
+
+            # Totals
+            total_pnl = sum(float(x["Unrealized PnL (USD)"]) for x in positions)
+            total_long_value = sum(x["Position Value (USD)"] for x in positions if x["Side"] == "LONG")
+            total_short_value = sum(x["Position Value (USD)"] for x in positions if x["Side"] == "SHORT")
+
+            pnl_color = "green" if total_pnl > 0 else "red" if total_pnl < 0 else "white"
+            st.markdown(
+                f"<p style='font-weight:bold;font-size:16px;'>"
+                f"Long Exposure: <span style='color:green;'>${total_long_value:,.2f}</span> &nbsp;|&nbsp; "
+                f"Short Exposure: <span style='color:red;'>${total_short_value:,.2f}</span>"
+                f"</p>",
+                unsafe_allow_html=True
+            )
+            st.markdown(
+                f"<p style='font-weight:bold;font-size:16px;color:{pnl_color};'>"
+                f"Total Unrealized PnL: {total_pnl:+,.2f} USD</p>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.info("No open positions.")
 
         st.markdown("---")
