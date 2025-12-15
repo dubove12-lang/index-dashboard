@@ -15,15 +15,40 @@ DASHBOARD_FILE = "dashboards.json"
 DATA_DIR = "data"
 DELETE_PIN = "6000"  # 🔒 bezpečnostný PIN
 
+# === NOTES ===
+NOTES_DIR = "notes"
+
 st.set_page_config(page_title="Hyperliquid Live Wallet Dashboards", layout="wide")
 
-# === ZABEZPEČI, ŽE EXISTUJE DATA PRIEČINOK ===
+# === ZABEZPEČI, ŽE EXISTUJÚ PRIEČINKY ===
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(NOTES_DIR, exist_ok=True)
+
+# === NOTES HELPERS ===
+def _safe_filename(name: str) -> str:
+    # jednoduché "sanitize" názvu, aby sa z toho dal spraviť filename
+    safe = "".join(c for c in name if c.isalnum() or c in (" ", "_", "-")).rstrip()
+    return safe if safe else "dashboard"
+
+def notes_path(dash_name: str) -> str:
+    return os.path.join(NOTES_DIR, f"{_safe_filename(dash_name)}.txt")
+
+def load_notes(dash_name: str) -> str:
+    p = notes_path(dash_name)
+    if os.path.exists(p):
+        with open(p, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
+
+def save_notes(dash_name: str, text: str) -> None:
+    p = notes_path(dash_name)
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(text or "")
 
 # === LOAD / SAVE DASHBOARDY ===
 def load_dashboards():
     if os.path.exists(DASHBOARD_FILE):
-        with open(DASHBOARD_FILE, "r") as f:
+        with open(DASHBOARD_FILE, "r", encoding="utf-8") as f:
             try:
                 dashboards = json.load(f)
             except json.JSONDecodeError:
@@ -34,7 +59,6 @@ def load_dashboards():
         for name, info in dashboards.items():
             if "wallet" not in info and "wallets" in info and isinstance(info["wallets"], list) and len(info["wallets"]) > 0:
                 info["wallet"] = info["wallets"][0]
-                # ak chceš, môžeš si ponechať info["wallets"] pre referenciu, ale netreba
                 changed = True
 
         if changed:
@@ -44,7 +68,7 @@ def load_dashboards():
     return {}
 
 def save_dashboards(dashboards):
-    with open(DASHBOARD_FILE, "w") as f:
+    with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
         json.dump(dashboards, f, indent=2)
 
 # === LOAD / SAVE DATAFRAME ===
@@ -66,9 +90,17 @@ def delete_dashboard(name):
     if name in st.session_state.dataframes:
         del st.session_state.dataframes[name]
     save_dashboards(st.session_state.dashboards)
+
+    # zmaž CSV
     path = os.path.join(DATA_DIR, f"{name}.csv")
     if os.path.exists(path):
         os.remove(path)
+
+    # (voliteľné) zmaž aj poznámky
+    npath = notes_path(name)
+    if os.path.exists(npath):
+        os.remove(npath)
+
     st.success(f"🗑️ Dashboard '{name}' deleted.")
     st.rerun()
 
@@ -243,7 +275,6 @@ else:
 
         value = get_wallet_value(wallet_addr)
         total = value  # ✅ pri 1 wallete je TOTAL = accountValue
-
         total_volume = get_wallet_volume(wallet_addr, start_ts)
 
         if value != 0.0:
@@ -256,9 +287,27 @@ else:
             st.session_state.dataframes[name] = df
             save_dashboard_data(name, df)
 
-        top_col1, top_col2 = st.columns([6, 1])
+        # === HEADER ROW: TITLE + NOTES POPOVER + DELETE ===
+        top_col1, top_col_notes, top_col2 = st.columns([6, 2, 1])
+
         with top_col1:
             st.subheader(f"🧭 {name}")
+
+        # ✅ Notes popover (vyskakovacie okno)
+        with top_col_notes:
+            with st.popover("📝 Notes"):
+                existing = load_notes(name)
+                text = st.text_area(
+                    "Poznámky k dashboardu",
+                    value=existing,
+                    height=220,
+                    placeholder="Napíš si sem poznámky…",
+                    key=f"notes_{name}",
+                )
+                if st.button("💾 Save", key=f"save_notes_{name}"):
+                    save_notes(name, text)
+                    st.success("Saved ✅")
+
         with top_col2:
             with st.expander("🗑️ Delete Dashboard", expanded=False):
                 pin = st.text_input("Enter PIN to confirm delete", type="password", key=f"pin_{name}")
